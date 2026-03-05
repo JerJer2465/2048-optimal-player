@@ -32,10 +32,8 @@ from torch.distributions import Categorical
 from torch.utils.tensorboard import SummaryWriter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from game2048_env import Game2048Env, encode_board, OBS_SHAPE, N_ACTIONS
+from game2048_env import Game2048Env, OBS_SHAPE, N_ACTIONS
 from neural_player import TwoFortyEightNet, CHECKPOINT_PATH
-from game2048 import Game2048
-from ai_player import AIPlayer
 
 # ── Hyperparameters ───────────────────────────────────────────────────────────
 N_ENVS = 8
@@ -55,14 +53,8 @@ LR_END = 1e-5
 MAX_GRAD_NORM = 0.5
 
 TOTAL_STEPS = 30_000_000    # increase for longer training (~3–6 h on CPU)
-CHECKPOINT_EVERY_EPISODES = 100
-LOG_EVERY_EPISODES = 20
-
-# ── Behaviour Cloning warm-up ─────────────────────────────────────────────────
-BC_GAMES = 100              # games played by AIPlayer to collect BC data
-BC_EPOCHS = 20              # supervised epochs over the collected data
-BC_LR = 1e-3                # higher LR for the short BC phase
-BC_BATCH_SIZE = 512
+CHECKPOINT_EVERY_EPISODES = 500
+LOG_EVERY_EPISODES = 50
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -186,16 +178,15 @@ def ppo_update(model, optimizer, buffer, entropy_coef, device):
 
 
 def save_checkpoint(model, optimizer, total_steps, episodes_done, recent_scores,
-                    recent_max_tiles, best_score, bc_done: bool = False):
+                    recent_max_tiles, best_score):
     stats = {
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
-        'total_steps': int(total_steps),
-        'episodes_done': int(episodes_done),
+        'total_steps': total_steps,
+        'episodes_done': episodes_done,
         'avg_score_recent': float(np.mean(recent_scores)) if recent_scores else 0.0,
         'avg_max_tile_recent': float(np.mean(recent_max_tiles)) if recent_max_tiles else 0.0,
-        'best_score': int(best_score),
-        'bc_done': bool(bc_done),
+        'best_score': best_score,
     }
     tmp_path = CHECKPOINT_PATH + '.tmp'
     torch.save(stats, tmp_path)
@@ -225,95 +216,6 @@ def log_tile_percentages(writer: SummaryWriter, tiles, step: int):
     for threshold in [256, 512, 1024, 2048, 4096, 8192]:
         pct = 100.0 * sum(t >= threshold for t in tiles_list) / n
         writer.add_scalar(f"tiles/pct_reached_{threshold}", pct, step)
-
-
-_ACTION_MAP = {'up': 0, 'down': 1, 'left': 2, 'right': 3}
-
-
-def run_bc_phase(model, optimizer, device, writer: 'SummaryWriter'):
-    """One-shot behaviour-cloning warm-up using the Expectimax AIPlayer.
-
-    Plays BC_GAMES full games with the rule-based AI and trains the neural
-    network's policy head to imitate those moves via cross-entropy loss.
-    The value head is not touched here — PPO will shape it during self-play.
-    """
-    print()
-    print("─" * 65)
-    print("  Behaviour Cloning warm-up phase")
-    print(f"  Playing {BC_GAMES} expert games (AIPlayer depth=3) …")
-    print("─" * 65)
-
-    ai = AIPlayer(search_depth=3)
-
-    obs_list: list = []
-    act_list: list = []
-
-    for g in range(BC_GAMES):
-        game = Game2048()
-        game.spawn_tile()
-        game.spawn_tile()
-        steps = 0
-        while True:
-            move = ai.get_best_move(game)
-            if move is None:
-                break
-            action_idx = _ACTION_MAP.get(move)
-            if action_idx is None:
-                break
-            # encode the board before making the move
-            obs = encode_board(game.board)
-            obs_list.append(obs)
-            act_list.append(action_idx)
-            changed = game.move(move)
-            if not changed:
-                break
-            game.spawn_tile()
-            steps += 1
-            if game.game_over:
-                break
-        if (g + 1) % 10 == 0:
-            print(f"  BC games completed: {g + 1}/{BC_GAMES}  "
-                  f"(dataset size so far: {len(obs_list):,} steps)")
-
-    print(f"  Dataset collected: {len(obs_list):,} (state, action) pairs")
-    print(f"  Training policy head for {BC_EPOCHS} epochs …")
-
-    obs_arr = np.array(obs_list, dtype=np.float32)
-    act_arr = np.array(act_list, dtype=np.int64)
-    n = len(obs_arr)
-
-    bc_optimizer = torch.optim.Adam(model.parameters(), lr=BC_LR)
-    model.train()
-
-    for epoch in range(BC_EPOCHS):
-        idx = np.random.permutation(n)
-        epoch_loss = 0.0
-        n_batches = 0
-        for start in range(0, n, BC_BATCH_SIZE):
-            b = idx[start: start + BC_BATCH_SIZE]
-            obs_t = torch.tensor(obs_arr[b], device=device)
-            act_t = torch.tensor(act_arr[b], dtype=torch.long, device=device)
-            logits, _ = model(obs_t)
-            loss = F.cross_entropy(logits, act_t)
-            bc_optimizer.zero_grad()
-            loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
-            bc_optimizer.step()
-            epoch_loss += loss.item()
-            n_batches += 1
-        avg_loss = epoch_loss / max(n_batches, 1)
-        writer.add_scalar("bc/cross_entropy_loss", avg_loss, epoch)
-        if (epoch + 1) % 5 == 0 or epoch == 0:
-            print(f"  BC epoch {epoch + 1:>3}/{BC_EPOCHS}  loss={avg_loss:.4f}")
-
-    # Reset the main optimizer state so PPO starts with a clean momentum
-    for group in optimizer.param_groups:
-        group['lr'] = LR_START
-    optimizer.state.clear()
-
-    print("  Behaviour cloning complete.")
-    print("─" * 65)
-    print()
 
 
 def main():
@@ -348,7 +250,6 @@ def main():
     total_steps = 0
     episodes_done = 0
     best_score = 0
-    bc_done = False
     if os.path.exists(CHECKPOINT_PATH):
         try:
             ckpt = torch.load(CHECKPOINT_PATH, map_location=device, weights_only=False)
@@ -357,11 +258,9 @@ def main():
             total_steps = int(ckpt.get('total_steps', 0))
             episodes_done = int(ckpt.get('episodes_done', 0))
             best_score = int(ckpt.get('best_score', 0))
-            bc_done = bool(ckpt.get('bc_done', False))
             print(
                 f"Resumed: {total_steps:,} steps, "
-                f"{episodes_done:,} episodes, best score {best_score:,}, "
-                f"bc_done={bc_done}"
+                f"{episodes_done:,} episodes, best score {best_score:,}"
             )
             print()
         except Exception as exc:
@@ -391,21 +290,9 @@ def main():
 
     # Save an initial checkpoint immediately so the UI sees the model exists
     save_checkpoint(model, optimizer, total_steps, episodes_done,
-                    recent_scores, recent_max_tiles, best_score, bc_done=bc_done)
+                    recent_scores, recent_max_tiles, best_score)
     print("Initial checkpoint written.")
     print()
-
-    # ── Behaviour Cloning warm-up (skipped on resume if already done) ─────
-    if not bc_done:
-        run_bc_phase(model, optimizer, device, writer)
-        save_checkpoint(model, optimizer, total_steps, episodes_done,
-                        recent_scores, recent_max_tiles, best_score, bc_done=True)
-        bc_done = True
-        print("BC checkpoint saved. Starting PPO self-play …")
-        print()
-    else:
-        print("BC phase already done — skipping.")
-        print()
 
     # ── Training loop ─────────────────────────────────────────────────────
     rollout_num = 0
@@ -448,9 +335,6 @@ def main():
                         episodes_done += 1
                         episodes_since_ckpt += 1
                         episodes_since_log += 1
-                        # Per-episode TensorBoard so charts update continuously
-                        writer.add_scalar("charts/episode_score",    score,    episodes_done)
-                        writer.add_scalar("charts/episode_max_tile", max_tile, episodes_done)
 
             # Bootstrap value for the last observation
             obs_t = torch.tensor(obs, dtype=torch.float32, device=device)
@@ -481,23 +365,10 @@ def main():
         writer.add_scalar("train/entropy_coef",  entropy_coef, total_steps)
         writer.add_scalar("train/episodes",      episodes_done, total_steps)
 
-        # ── Per-rollout heartbeat ─────────────────────────────────────────
-        elapsed = time.time() - start_time
-        sps = (total_steps - start_steps) / max(elapsed, 1)
-        avg_score_now = float(np.mean(recent_scores)) if recent_scores else 0.0
-        print(
-            f"  rollout {rollout_num:>5}  "
-            f"step={total_steps:>10,}  "
-            f"ep={episodes_done:>6,}  "
-            f"avg={avg_score_now:>7.0f}  "
-            f"best={best_score:>7,}  "
-            f"p_loss={p_loss:.3f}  v_loss={v_loss:.3f}  "
-            f"sps={sps:>5.0f}",
-            flush=True,
-        )
-
         # ── Logging ───────────────────────────────────────────────────────
         if episodes_since_log >= LOG_EVERY_EPISODES and recent_scores:
+            elapsed = time.time() - start_time
+            sps = (total_steps - start_steps) / max(elapsed, 1)
             eta_s = max(0, (TOTAL_STEPS - total_steps) / max(sps, 1))
             eta_h = eta_s / 3600
 
@@ -535,14 +406,14 @@ def main():
         if episodes_since_ckpt >= CHECKPOINT_EVERY_EPISODES:
             save_checkpoint(
                 model, optimizer, total_steps, episodes_done,
-                recent_scores, recent_max_tiles, best_score, bc_done=True
+                recent_scores, recent_max_tiles, best_score
             )
             episodes_since_ckpt = 0
             print(f"  ✓ checkpoint saved  (step {total_steps:,})")
 
     # ── Final save ────────────────────────────────────────────────────────
     save_checkpoint(model, optimizer, total_steps, episodes_done,
-                    recent_scores, recent_max_tiles, best_score, bc_done=True)
+                    recent_scores, recent_max_tiles, best_score)
     writer.flush()
     writer.close()
     print()
