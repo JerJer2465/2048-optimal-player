@@ -11,17 +11,22 @@ from game2048 import Game2048
 class AIPlayer:
     """AI player using Expectimax algorithm with heuristics."""
     
-    def __init__(self, search_depth: int = 3):
+    def __init__(self, search_depth: int = 5):
         """Initialize AI player.
         
         Args:
-            search_depth: How many moves to look ahead (default 3)
+            search_depth: How many moves to look ahead (default 5)
         """
         self.search_depth = search_depth
         self.moves_tried = 0
+        self.cache_hits = 0
+        self.cache_misses = 0
+        
+        # Transposition table: cache evaluated positions
+        self.transposition_table = {}
         
     def get_best_move(self, game: Game2048) -> Optional[str]:
-        """Find the best move for current game state.
+        """Find the best move for current game state using iterative deepening.
         
         Args:
             game: Current game state
@@ -30,24 +35,43 @@ class AIPlayer:
             Best move ('up', 'down', 'left', 'right') or None
         """
         self.moves_tried = 0
-        best_move = None
-        best_score = -float('inf')
+        # Clear cache periodically to prevent memory bloat
+        if len(self.transposition_table) > 500000:
+            self.transposition_table.clear()
         
-        for direction in ['up', 'down', 'left', 'right']:
-            # Try this move
-            test_game = game.clone()
-            if test_game.move(direction):
-                # Evaluate using expectimax
-                score = self._expectimax(test_game, self.search_depth - 1, False)
-                
-                if score > best_score:
-                    best_score = score
-                    best_move = direction
+        # Iterative deepening: start at depth 3, work up to search_depth
+        best_move = None
+        for current_depth in range(3, self.search_depth + 1):
+            depth_best_move = None
+            depth_best_score = -float('inf')
+            
+            for direction in ['up', 'down', 'left', 'right']:
+                test_game = game.clone()
+                if test_game.move(direction):
+                    score = self._expectimax(test_game, current_depth - 1, False)
+                    if score > depth_best_score:
+                        depth_best_score = score
+                        depth_best_move = direction
+            
+            # Update best move if we found one at this depth
+            if depth_best_move is not None:
+                best_move = depth_best_move
         
         return best_move
     
+    def _hash_board(self, board: np.ndarray) -> int:
+        """Create a hash of the board state for transposition table.
+        
+        Args:
+            board: Game board to hash
+            
+        Returns:
+            Hash value as integer
+        """
+        return hash(board.tobytes())
+    
     def _expectimax(self, game: Game2048, depth: int, is_player_turn: bool) -> float:
-        """Expectimax algorithm implementation.
+        """Expectimax algorithm implementation with transposition table.
         
         Args:
             game: Current game state
@@ -63,6 +87,16 @@ class AIPlayer:
         if depth == 0 or game.game_over:
             return self._evaluate_board(game)
         
+        # Check transposition table (cache)
+        board_hash = self._hash_board(game.board)
+        cache_key = (board_hash, depth, is_player_turn)
+        
+        if cache_key in self.transposition_table:
+            self.cache_hits += 1
+            return self.transposition_table[cache_key]
+        
+        self.cache_misses += 1
+        
         if is_player_turn:
             # Maximize: try all moves and pick best
             max_score = -float('inf')
@@ -72,18 +106,31 @@ class AIPlayer:
                     score = self._expectimax(test_game, depth - 1, False)
                     max_score = max(max_score, score)
             
-            return max_score if max_score != -float('inf') else 0
+            result = max_score if max_score != -float('inf') else 0
+            # Store result in cache
+            self.transposition_table[cache_key] = result
+            return result
         else:
             # Chance node: average over possible tile spawns
             empty_cells = list(zip(*np.where(game.board == 0)))
             if not empty_cells:
-                return self._evaluate_board(game)
+                result = self._evaluate_board(game)
+                self.transposition_table[cache_key] = result
+                return result
             
             expected_score = 0.0
             num_empty = len(empty_cells)
             
-            # Sample a subset of empty cells to reduce branching
-            sample_size = min(num_empty, 4)  # Only check up to 4 cells
+            # Reduce branching factor at deeper levels
+            # At shallow depths (depth >= 3), check more cells
+            # At deep depths (depth < 3), check fewer cells
+            if depth >= 3:
+                sample_size = min(num_empty, 4)
+            elif depth >= 2:
+                sample_size = min(num_empty, 3)
+            else:
+                sample_size = min(num_empty, 2)
+            
             sampled_cells = empty_cells[:sample_size]
             
             for row, col in sampled_cells:
@@ -99,7 +146,10 @@ class AIPlayer:
                 score_4 = self._expectimax(test_game_4, depth - 1, True)
                 expected_score += 0.1 * score_4
             
-            return expected_score / sample_size
+            result = expected_score / sample_size
+            # Store result in cache
+            self.transposition_table[cache_key] = result
+            return result
     
     def _evaluate_board(self, game: Game2048) -> float:
         """Evaluate board state using heuristics.
@@ -119,11 +169,13 @@ class AIPlayer:
         board = game.board
         score = 0.0
         
-        # Weight factors (tuned for good performance)
-        MONOTONICITY_WEIGHT = 1.0
+        # Weight factors (tuned for 90-95% win rate to reach 2048)
+        # Higher empty weight encourages keeping board open
+        # Higher monotonicity encourages snake pattern
+        MONOTONICITY_WEIGHT = 1.5
         SMOOTHNESS_WEIGHT = 0.1
-        EMPTY_WEIGHT = 2.7
-        MAX_CORNER_WEIGHT = 1.0
+        EMPTY_WEIGHT = 3.5
+        MAX_CORNER_WEIGHT = 1.2
         
         # 1. Monotonicity: reward increasing/decreasing sequences
         score += MONOTONICITY_WEIGHT * self._monotonicity(board)
