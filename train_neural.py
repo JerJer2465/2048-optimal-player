@@ -37,12 +37,12 @@ from neural_player import TwoFortyEightNet, CHECKPOINT_PATH
 
 # ── Hyperparameters ───────────────────────────────────────────────────────────
 N_ENVS = 8
-N_STEPS = 1024              # larger rollout captures more of each game
-BATCH_SIZE = N_ENVS * N_STEPS  # 8192 total transitions per update
+N_STEPS = 512               # steps collected per env per rollout
+BATCH_SIZE = N_ENVS * N_STEPS  # 4096 total transitions per update
 MINI_BATCH_SIZE = 512
 N_EPOCHS = 10               # PPO epochs per rollout
 
-GAMMA = 0.999               # long horizon — 2048 games are 200-500 steps
+GAMMA = 0.99
 GAE_LAMBDA = 0.95
 CLIP_EPS = 0.2
 ENTROPY_COEF_START = 0.10   # higher start = more exploration, decays toward end
@@ -234,7 +234,7 @@ def main():
     print("=" * 65)
     print(f"  Device        : {device}")
     print(f"  Environments  : {N_ENVS}")
-    print(f"  Steps/rollout : {BATCH_SIZE:,}  ({N_STEPS} steps × {N_ENVS} envs)")
+    print(f"  Steps/rollout : {BATCH_SIZE:,}  ({N_STEPS} steps × {N_ENVS} envs, action-masked)")
     print(f"  Total budget  : {TOTAL_STEPS:,} steps")
     print(f"  Checkpoint    : {CHECKPOINT_PATH}")
     print(f"  TensorBoard   : {run_dir}")
@@ -308,7 +308,12 @@ def main():
 
                 obs_t = torch.tensor(obs, dtype=torch.float32, device=device)
                 logits, values = model(obs_t)
-                dist = Categorical(logits=logits)
+
+                # Action masking: suppress invalid moves so they are never sampled
+                masks = np.array([env.action_mask() for env in vec_env.envs])
+                masks_t = torch.tensor(masks, dtype=torch.bool, device=device)
+                logits_masked = logits.masked_fill(~masks_t, float('-inf'))
+                dist = Categorical(logits=logits_masked)
                 actions = dist.sample()
                 log_probs = dist.log_prob(actions)
 

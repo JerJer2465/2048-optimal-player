@@ -15,7 +15,7 @@ from game2048 import Game2048
 DIRECTIONS = ['up', 'down', 'left', 'right']
 N_ACTIONS = 4
 OBS_SHAPE = (16, 4, 4)
-MAX_EPISODE_STEPS = 3000   # hard cap — prevents infinite episodes
+MAX_EPISODE_STEPS = 3000   # safety cap — should rarely trigger with action masking
 
 
 def encode_board(board: np.ndarray) -> np.ndarray:
@@ -41,10 +41,11 @@ class Game2048Env(gym.Env):
 
     Observation space : Box(16, 4, 4) one-hot encoded board.
     Action space      : Discrete(4)  — 0=up, 1=down, 2=left, 3=right.
-    Reward            :
-        - Invalid move (board unchanged): -1
-        - Valid move:  log2(score_delta + 1)
-                     + 100 * log2(new_max_tile) when a new max tile is reached
+    Reward            : log2(score_delta + 1) for any merge, 0 otherwise.
+
+    Use action_mask() before sampling to ensure only valid actions are chosen.
+    Invalid actions passed to step() still execute (with 0 reward if no merge)
+    but the caller is responsible for masking them out.
     """
 
     metadata = {'render_modes': []}
@@ -56,67 +57,30 @@ class Game2048Env(gym.Env):
         )
         self.action_space = spaces.Discrete(N_ACTIONS)
         self.game: Game2048 = None
-        self.max_tile_seen: int = 0
+        self._steps: int = 0
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.game = Game2048()
-        self.max_tile_seen = self.game.get_max_tile()
         self._steps = 0
         return encode_board(self.game.board), {}
 
-    @staticmethod
-    def _board_heuristic(board: np.ndarray) -> float:
-        """Lightweight per-step shaping: empty cells + corner monotonicity.
-
-        Kept small (scaled to ~0-1 range) so it doesn't overwhelm the merge
-        score signal, but enough to guide the policy toward keeping big tiles
-        in a corner and maintaining an organised board.
-        """
-        empty = float(np.sum(board == 0)) / 16.0          # 0-1
-
-        # Monotonicity along rows and cols (reward sorted arrangements)
-        mono = 0.0
-        for row in board:
-            nz = row[row > 0]
-            if len(nz) > 1:
-                if np.all(nz[:-1] >= nz[1:]) or np.all(nz[:-1] <= nz[1:]):
-                    mono += 1.0
-        for col in board.T:
-            nz = col[col > 0]
-            if len(nz) > 1:
-                if np.all(nz[:-1] >= nz[1:]) or np.all(nz[:-1] <= nz[1:]):
-                    mono += 1.0
-        mono /= 8.0   # 0-1
-
-        # Max tile in any corner bonus
-        corners = [board[0,0], board[0,3], board[3,0], board[3,3]]
-        max_tile = board.max()
-        corner_bonus = 0.5 if max_tile > 0 and max_tile in corners else 0.0
-
-        return 0.4 * empty + 0.4 * mono + 0.2 * corner_bonus
+    def action_mask(self) -> np.ndarray:
+        """Return bool[4] — True if direction i produces a valid (changed) board."""
+        mask = np.zeros(4, dtype=bool)
+        for i, direction in enumerate(DIRECTIONS):
+            test = self.game.clone()
+            mask[i] = test.move(direction)
+        return mask
 
     def step(self, action: int):
         direction = DIRECTIONS[int(action)]
         prev_score = self.game.score
 
-        moved = self.game.move(direction)
+        self.game.move(direction)
         score_delta = self.game.score - prev_score
 
-        if not moved:
-            # Penalise invalid move; do NOT secretly apply another move —
-            # that breaks the action→consequence relationship for learning.
-            reward = -1.0
-        else:
-            # Merge reward (log-scaled so large merges don't dominate early)
-            reward = float(np.log2(score_delta + 1)) if score_delta > 0 else 0.0
-
-            # Large one-time bonus each time a new max tile is reached —
-            # this is the main incentive to push beyond the current plateau.
-            new_max = self.game.get_max_tile()
-            if new_max > self.max_tile_seen:
-                reward += 100.0 * float(np.log2(max(new_max, 2)))
-                self.max_tile_seen = new_max
+        reward = float(np.log2(score_delta + 1)) if score_delta > 0 else 0.0
 
         self._steps += 1
         terminated = self.game.game_over or self._steps >= MAX_EPISODE_STEPS
@@ -124,6 +88,5 @@ class Game2048Env(gym.Env):
         info = {
             'score': self.game.score,
             'max_tile': self.game.get_max_tile(),
-            'moved': moved,
         }
         return obs, reward, terminated, False, info
