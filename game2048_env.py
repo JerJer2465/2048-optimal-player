@@ -15,6 +15,7 @@ from game2048 import Game2048
 DIRECTIONS = ['up', 'down', 'left', 'right']
 N_ACTIONS = 4
 OBS_SHAPE = (16, 4, 4)
+MAX_EPISODE_STEPS = 3000   # hard cap — prevents infinite episodes
 
 
 def encode_board(board: np.ndarray) -> np.ndarray:
@@ -61,6 +62,7 @@ class Game2048Env(gym.Env):
         super().reset(seed=seed)
         self.game = Game2048()
         self.max_tile_seen = self.game.get_max_tile()
+        self._steps = 0
         return encode_board(self.game.board), {}
 
     def step(self, action: int):
@@ -71,7 +73,16 @@ class Game2048Env(gym.Env):
         score_delta = self.game.score - prev_score
 
         if not moved:
+            # Force a random valid move so the game always progresses,
+            # but still penalise the invalid choice.
             reward = -1.0
+            valid = [d for d in DIRECTIONS if d != direction]
+            import random
+            random.shuffle(valid)
+            for fallback in valid:
+                if self.game.move(fallback):
+                    score_delta = self.game.score - prev_score
+                    break
         else:
             reward = float(np.log2(score_delta + 1)) if score_delta > 0 else 0.0
             new_max = self.game.get_max_tile()
@@ -79,7 +90,8 @@ class Game2048Env(gym.Env):
                 reward += 100.0 * float(np.log2(max(new_max, 2)))
                 self.max_tile_seen = new_max
 
-        terminated = self.game.game_over
+        self._steps += 1
+        terminated = self.game.game_over or self._steps >= MAX_EPISODE_STEPS
         obs = encode_board(self.game.board)
         info = {
             'score': self.game.score,
