@@ -27,3 +27,6 @@ Thumbs.db
 *.log
 checkpoints/
 models/
+model_checkpoint.pth
+model_checkpoint.pth.tmp
+runs/
