@@ -65,30 +65,62 @@ class Game2048Env(gym.Env):
         self._steps = 0
         return encode_board(self.game.board), {}
 
+    @staticmethod
+    def _board_heuristic(board: np.ndarray) -> float:
+        """Lightweight per-step shaping: empty cells + corner monotonicity.
+
+        Kept small (scaled to ~0-1 range) so it doesn't overwhelm the merge
+        score signal, but enough to guide the policy toward keeping big tiles
+        in a corner and maintaining an organised board.
+        """
+        empty = float(np.sum(board == 0)) / 16.0          # 0-1
+
+        # Monotonicity along rows and cols (reward sorted arrangements)
+        mono = 0.0
+        for row in board:
+            nz = row[row > 0]
+            if len(nz) > 1:
+                if np.all(nz[:-1] >= nz[1:]) or np.all(nz[:-1] <= nz[1:]):
+                    mono += 1.0
+        for col in board.T:
+            nz = col[col > 0]
+            if len(nz) > 1:
+                if np.all(nz[:-1] >= nz[1:]) or np.all(nz[:-1] <= nz[1:]):
+                    mono += 1.0
+        mono /= 8.0   # 0-1
+
+        # Max tile in any corner bonus
+        corners = [board[0,0], board[0,3], board[3,0], board[3,3]]
+        max_tile = board.max()
+        corner_bonus = 0.5 if max_tile > 0 and max_tile in corners else 0.0
+
+        return 0.4 * empty + 0.4 * mono + 0.2 * corner_bonus
+
     def step(self, action: int):
         direction = DIRECTIONS[int(action)]
         prev_score = self.game.score
+        prev_heuristic = self._board_heuristic(self.game.board)
 
         moved = self.game.move(direction)
         score_delta = self.game.score - prev_score
 
         if not moved:
-            # Force a random valid move so the game always progresses,
-            # but still penalise the invalid choice.
+            # Penalise invalid move; do NOT secretly apply another move —
+            # that breaks the action→consequence relationship for learning.
             reward = -1.0
-            valid = [d for d in DIRECTIONS if d != direction]
-            import random
-            random.shuffle(valid)
-            for fallback in valid:
-                if self.game.move(fallback):
-                    score_delta = self.game.score - prev_score
-                    break
         else:
+            # Merge reward (log-scaled to avoid early large merges dominating)
             reward = float(np.log2(score_delta + 1)) if score_delta > 0 else 0.0
+
+            # One-time bonus each time a new max tile is reached
             new_max = self.game.get_max_tile()
             if new_max > self.max_tile_seen:
-                reward += 100.0 * float(np.log2(max(new_max, 2)))
+                reward += 10.0 * float(np.log2(max(new_max, 2)))
                 self.max_tile_seen = new_max
+
+            # Per-step board-structure shaping (small, ~0-1 scale)
+            curr_heuristic = self._board_heuristic(self.game.board)
+            reward += 0.5 * (curr_heuristic - prev_heuristic)
 
         self._steps += 1
         terminated = self.game.game_over or self._steps >= MAX_EPISODE_STEPS

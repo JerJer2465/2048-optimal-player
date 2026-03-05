@@ -45,7 +45,7 @@ N_EPOCHS = 10               # PPO epochs per rollout
 GAMMA = 0.99
 GAE_LAMBDA = 0.95
 CLIP_EPS = 0.2
-ENTROPY_COEF_START = 0.05   # decays toward ENTROPY_COEF_END over training
+ENTROPY_COEF_START = 0.10   # higher start = more exploration, decays toward end
 ENTROPY_COEF_END = 0.005
 VALUE_COEF = 0.5
 LR_START = 3e-4
