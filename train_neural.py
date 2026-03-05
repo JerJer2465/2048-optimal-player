@@ -37,12 +37,12 @@ from neural_player import TwoFortyEightNet, CHECKPOINT_PATH
 
 # ── Hyperparameters ───────────────────────────────────────────────────────────
 N_ENVS = 8
-N_STEPS = 512               # steps collected per env per rollout
-BATCH_SIZE = N_ENVS * N_STEPS  # 4096 total transitions per update
+N_STEPS = 1024              # larger rollout captures more of each game
+BATCH_SIZE = N_ENVS * N_STEPS  # 8192 total transitions per update
 MINI_BATCH_SIZE = 512
 N_EPOCHS = 10               # PPO epochs per rollout
 
-GAMMA = 0.99
+GAMMA = 0.999               # long horizon — 2048 games are 200-500 steps
 GAE_LAMBDA = 0.95
 CLIP_EPS = 0.2
 ENTROPY_COEF_START = 0.10   # higher start = more exploration, decays toward end

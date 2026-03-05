@@ -99,7 +99,6 @@ class Game2048Env(gym.Env):
     def step(self, action: int):
         direction = DIRECTIONS[int(action)]
         prev_score = self.game.score
-        prev_heuristic = self._board_heuristic(self.game.board)
 
         moved = self.game.move(direction)
         score_delta = self.game.score - prev_score
@@ -109,18 +108,15 @@ class Game2048Env(gym.Env):
             # that breaks the action→consequence relationship for learning.
             reward = -1.0
         else:
-            # Merge reward (log-scaled to avoid early large merges dominating)
+            # Merge reward (log-scaled so large merges don't dominate early)
             reward = float(np.log2(score_delta + 1)) if score_delta > 0 else 0.0
 
-            # One-time bonus each time a new max tile is reached
+            # Large one-time bonus each time a new max tile is reached —
+            # this is the main incentive to push beyond the current plateau.
             new_max = self.game.get_max_tile()
             if new_max > self.max_tile_seen:
-                reward += 10.0 * float(np.log2(max(new_max, 2)))
+                reward += 100.0 * float(np.log2(max(new_max, 2)))
                 self.max_tile_seen = new_max
-
-            # Per-step board-structure shaping (small, ~0-1 scale)
-            curr_heuristic = self._board_heuristic(self.game.board)
-            reward += 0.5 * (curr_heuristic - prev_heuristic)
 
         self._steps += 1
         terminated = self.game.game_over or self._steps >= MAX_EPISODE_STEPS
