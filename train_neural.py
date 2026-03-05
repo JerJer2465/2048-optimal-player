@@ -55,8 +55,8 @@ LR_END = 1e-5
 MAX_GRAD_NORM = 0.5
 
 TOTAL_STEPS = 30_000_000    # increase for longer training (~3–6 h on CPU)
-CHECKPOINT_EVERY_EPISODES = 500
-LOG_EVERY_EPISODES = 50
+CHECKPOINT_EVERY_EPISODES = 100
+LOG_EVERY_EPISODES = 20
 
 # ── Behaviour Cloning warm-up ─────────────────────────────────────────────────
 BC_GAMES = 100              # games played by AIPlayer to collect BC data
@@ -448,6 +448,9 @@ def main():
                         episodes_done += 1
                         episodes_since_ckpt += 1
                         episodes_since_log += 1
+                        # Per-episode TensorBoard so charts update continuously
+                        writer.add_scalar("charts/episode_score",    score,    episodes_done)
+                        writer.add_scalar("charts/episode_max_tile", max_tile, episodes_done)
 
             # Bootstrap value for the last observation
             obs_t = torch.tensor(obs, dtype=torch.float32, device=device)
@@ -478,10 +481,23 @@ def main():
         writer.add_scalar("train/entropy_coef",  entropy_coef, total_steps)
         writer.add_scalar("train/episodes",      episodes_done, total_steps)
 
+        # ── Per-rollout heartbeat ─────────────────────────────────────────
+        elapsed = time.time() - start_time
+        sps = (total_steps - start_steps) / max(elapsed, 1)
+        avg_score_now = float(np.mean(recent_scores)) if recent_scores else 0.0
+        print(
+            f"  rollout {rollout_num:>5}  "
+            f"step={total_steps:>10,}  "
+            f"ep={episodes_done:>6,}  "
+            f"avg={avg_score_now:>7.0f}  "
+            f"best={best_score:>7,}  "
+            f"p_loss={p_loss:.3f}  v_loss={v_loss:.3f}  "
+            f"sps={sps:>5.0f}",
+            flush=True,
+        )
+
         # ── Logging ───────────────────────────────────────────────────────
         if episodes_since_log >= LOG_EVERY_EPISODES and recent_scores:
-            elapsed = time.time() - start_time
-            sps = (total_steps - start_steps) / max(elapsed, 1)
             eta_s = max(0, (TOTAL_STEPS - total_steps) / max(sps, 1))
             eta_h = eta_s / 3600
 
