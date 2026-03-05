@@ -7,6 +7,8 @@ AI player for the 2048 puzzle game with optimal strategy implementation.
 ```
 2048-optimal-player/
 ├── game2048.py          # Core 2048 game logic
+├── ai_player.py         # AI player (Expectimax + heuristics)
+├── benchmark.py         # Performance testing
 ├── test_game.py         # Test script
 ├── requirements.txt     # Python dependencies
 └── README.md           # This file
@@ -21,10 +23,14 @@ AI player for the 2048 puzzle game with optimal strategy implementation.
 - Game over detection
 - Random tile spawning
 
-🔄 **Phase 2: AI Player (TODO)**
-- Expectimax algorithm
-- Heuristic evaluation function
-- Optimal move selection
+✅ **Phase 2: AI Player (COMPLETE)**
+- Expectimax algorithm with configurable search depth
+- Multi-heuristic evaluation:
+  - Monotonicity (increasing/decreasing tile sequences)
+  - Smoothness (similar adjacent tiles)
+  - Empty cells (maximize available moves)
+  - Corner strategy (keep max tile in corner)
+- Optimal move selection to maximize score
 
 ## Installation
 
@@ -50,6 +56,24 @@ python game2048.py
 ```bash
 python test_game.py
 ```
+
+### Watch the AI play
+
+```bash
+python ai_player.py
+```
+
+### Benchmark AI performance
+
+```bash
+python benchmark.py
+```
+
+The benchmark will run 10 games and report:
+- Average/best/worst scores
+- Max tile distribution (how often it reaches 512, 1024, 2048, etc.)
+- Average moves per game
+- Time per game
 
 ## Game Features
 
