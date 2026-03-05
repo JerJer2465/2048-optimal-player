@@ -32,7 +32,7 @@ from torch.distributions import Categorical
 from torch.utils.tensorboard import SummaryWriter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from game2048_env import Game2048Env, OBS_SHAPE, N_ACTIONS
+from game2048_env import Game2048Env, encode_board, OBS_SHAPE, N_ACTIONS
 from neural_player import TwoFortyEightNet, CHECKPOINT_PATH
 from game2048 import Game2048
 from ai_player import AIPlayer
@@ -244,8 +244,6 @@ def run_bc_phase(model, optimizer, device, writer: 'SummaryWriter'):
     print("─" * 65)
 
     ai = AIPlayer(search_depth=3)
-    from game2048_env import Game2048Env
-    env = Game2048Env()
 
     obs_list: list = []
     act_list: list = []
@@ -263,7 +261,7 @@ def run_bc_phase(model, optimizer, device, writer: 'SummaryWriter'):
             if action_idx is None:
                 break
             # encode the board before making the move
-            obs = env.encode_board(game.board)
+            obs = encode_board(game.board)
             obs_list.append(obs)
             act_list.append(action_idx)
             changed = game.move(move)
@@ -271,7 +269,7 @@ def run_bc_phase(model, optimizer, device, writer: 'SummaryWriter'):
                 break
             game.spawn_tile()
             steps += 1
-            if game.is_game_over():
+            if game.game_over:
                 break
         if (g + 1) % 10 == 0:
             print(f"  BC games completed: {g + 1}/{BC_GAMES}  "
