@@ -53,8 +53,8 @@ LR_END = 1e-5
 MAX_GRAD_NORM = 0.5
 
 TOTAL_STEPS = 30_000_000    # increase for longer training (~3–6 h on CPU)
-CHECKPOINT_EVERY_EPISODES = 500
-LOG_EVERY_EPISODES = 50
+CHECKPOINT_EVERY_EPISODES = 50
+LOG_EVERY_EPISODES = 5
 # ─────────────────────────────────────────────────────────────────────────────
 
 
