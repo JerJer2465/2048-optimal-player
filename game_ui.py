@@ -3,8 +3,8 @@ Pygame UI for 2048 — supports both the Expectimax AI and the trained
 neural network player.
 
 At startup the UI checks for model_checkpoint.pth:
-  - Found  → NeuralPlayer (AlphaZero-style: depth-3 Expectimax + NN value head)
-  - Missing → AIPlayer    (hand-crafted Expectimax fallback)
+  - Found  → NeuralPlayer (CNN trained via PPO)
+  - Missing → AIPlayer    (Expectimax fallback)
 
 After each game the checkpoint is automatically reloaded if it has
 been updated on disk, so the player improves visibly while training
@@ -60,18 +60,15 @@ LIGHT_TEXT = (249, 246, 242)
 def _create_ai(neural_player: 'NeuralPlayer | None' = None):
     """Return (ai_instance, label_string).
 
-    If a NeuralPlayer is supplied and has a loaded checkpoint, use it
-    (AlphaZero-style: depth-3 Expectimax guided by the NN value head).
-    Otherwise fall back to the hand-crafted Expectimax AIPlayer.
+    If a NeuralPlayer is supplied and has a loaded checkpoint, use it.
+    Otherwise fall back to the Expectimax AIPlayer.
     """
     if _NEURAL_AVAILABLE and neural_player is not None and neural_player.loaded:
-        depth = neural_player.search_depth
-        return neural_player, f"Neural+Search (d={depth})"
+        return neural_player, "Neural AI"
     if _NEURAL_AVAILABLE and NeuralPlayer.is_available():
         np_instance = neural_player if neural_player is not None else NeuralPlayer()
         if np_instance.loaded:
-            depth = np_instance.search_depth
-            return np_instance, f"Neural+Search (d={depth})"
+            return np_instance, "Neural AI"
     return AIPlayer(search_depth=4), "Expectimax AI"
 
 
@@ -264,14 +261,10 @@ def play_with_ui(search_depth: int = 4, speed_multiplier: float = 1.0):
                 if neural_player is not None:
                     updated = neural_player.reload_if_updated()
                     ai, ai_label = _create_ai(neural_player)
-                    if updated:
-                        reload_msg = (
-                            f"Checkpoint reloaded!  "
-                            f"ep:{neural_player.episodes_done:,}  "
-                            f"avg:{neural_player.avg_score:.0f}"
-                        )
-                    else:
-                        reload_msg = "No new checkpoint yet."
+                    reload_msg = (
+                        f"Checkpoint reloaded!  ep:{neural_player.episodes_done:,}"
+                        if updated else "No new checkpoint yet."
+                    )
                     reload_msg_until = time.time() + 2.5
                 game_running = False
                 break
