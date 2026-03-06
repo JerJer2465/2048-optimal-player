@@ -51,7 +51,7 @@ The UI automatically uses the **neural network** if a trained checkpoint exists,
 
 ```bash
 cd /path/to/2048-optimal-player
-caffeinate -i nohup python3 train_neural.py > training.log 2>&1 &
+caffeinate -i nohup python3 -u train_neural.py > training.log 2>&1 &
 ```
 
 - `caffeinate -i` — prevents macOS from sleeping (training continues with lid closed)

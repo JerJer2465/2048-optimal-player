@@ -30,3 +30,6 @@ models/
 model_checkpoint.pth
 model_checkpoint.pth.tmp
 runs/
+
+# N-Tuple network weights (large binary, train locally with td_trainer.py)
+ntuple.bin

@@ -31,6 +31,13 @@ try:
 except ImportError:
     _NEURAL_AVAILABLE = False
 
+# Optional n-tuple player (requires ntuple.bin produced by td_trainer.py)
+try:
+    from ntuple_player import NTuplePlayer, WEIGHTS_PATH as _NTUPLE_WEIGHTS_PATH
+    _NTUPLE_AVAILABLE = True
+except ImportError:
+    _NTUPLE_AVAILABLE = False
+
 # ── Colors ────────────────────────────────────────────────────────────────────
 BACKGROUND = (187, 173, 160)
 TILE_COLORS = {
@@ -57,18 +64,28 @@ LIGHT_TEXT = (249, 246, 242)
 
 
 # ── Helper ────────────────────────────────────────────────────────────────────
-def _create_ai(neural_player: 'NeuralPlayer | None' = None):
+def _create_ai(neural_player: 'NeuralPlayer | None' = None,
+               ntuple_player: 'NTuplePlayer | None' = None):
     """Return (ai_instance, label_string).
 
-    If a NeuralPlayer is supplied and has a loaded checkpoint, use it.
-    Otherwise fall back to the Expectimax AIPlayer.
+    Priority: N-Tuple AI > Neural AI > Expectimax AI.
     """
+    # N-Tuple player (preferred when weights exist)
+    if _NTUPLE_AVAILABLE and ntuple_player is not None and ntuple_player.loaded:
+        return ntuple_player, "N-Tuple AI"
+    if _NTUPLE_AVAILABLE and NTuplePlayer.is_available():
+        nt = ntuple_player if ntuple_player is not None else NTuplePlayer()
+        if nt.loaded:
+            return nt, "N-Tuple AI"
+
+    # Neural player fallback
     if _NEURAL_AVAILABLE and neural_player is not None and neural_player.loaded:
         return neural_player, "Neural AI"
     if _NEURAL_AVAILABLE and NeuralPlayer.is_available():
         np_instance = neural_player if neural_player is not None else NeuralPlayer()
         if np_instance.loaded:
             return np_instance, "Neural AI"
+
     return AIPlayer(search_depth=4), "Expectimax AI"
 
 
@@ -127,7 +144,12 @@ class GameUI:
         self.screen.blit(max_surf, (200, 70))
 
         # AI type label (top-right)
-        label_color = (30, 120, 30) if "Neural" in ai_label else (80, 80, 160)
+        if "N-Tuple" in ai_label:
+            label_color = (160, 80, 0)
+        elif "Neural" in ai_label:
+            label_color = (30, 120, 30)
+        else:
+            label_color = (80, 80, 160)
         label_surf = self.info_font.render(ai_label, True, label_color)
         self.screen.blit(label_surf, (self.grid_size - label_surf.get_width() - 15, 15))
 
@@ -235,7 +257,12 @@ def play_with_ui(search_depth: int = 4, speed_multiplier: float = 1.0):
     ui = GameUI()
     ui.animation_speed /= speed_multiplier
 
-    # Initialise neural player once (reused across games for hot-reload)
+    # Initialise players once (reused across games)
+    ntuple_player = None
+    if _NTUPLE_AVAILABLE and NTuplePlayer.is_available():
+        print("Loading N-Tuple weights…")
+        ntuple_player = NTuplePlayer()
+
     neural_player = None
     if _NEURAL_AVAILABLE:
         neural_player = NeuralPlayer()
@@ -243,7 +270,7 @@ def play_with_ui(search_depth: int = 4, speed_multiplier: float = 1.0):
     running = True
     while running:
         # ── Choose AI for this game ───────────────────────────────────────
-        ai, ai_label = _create_ai(neural_player)
+        ai, ai_label = _create_ai(neural_player, ntuple_player)
 
         game = Game2048()
         moves_made = 0
@@ -266,6 +293,7 @@ def play_with_ui(search_depth: int = 4, speed_multiplier: float = 1.0):
                         if updated else "No new checkpoint yet."
                     )
                     reload_msg_until = time.time() + 2.5
+                    ai, ai_label = _create_ai(neural_player, ntuple_player)
                 game_running = False
                 break
 
