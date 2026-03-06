@@ -1,141 +1,176 @@
 # 2048 Optimal Player
 
-AI player for the 2048 puzzle game. Includes both a classic Expectimax AI and a **neural network player trained via PPO reinforcement learning** that targets 40,000+ scores consistently.
+AI player for the 2048 puzzle game with three AI backends, from strongest to weakest:
+
+| AI | Avg Score | 2048 Win Rate | Notes |
+|---|---|---|---|
+| **N-Tuple TD** | ~68,000 | ~91% | After 100k training games (~1.8h CPU) |
+| Expectimax | ~7,000 | ~90–95% | No training required, heuristic search |
+| Neural (PPO) | ~1,075 | 0% | Work in progress — structurally limited |
 
 ## Project Structure
 
 ```
 2048-optimal-player/
 ├── game2048.py          # Core 2048 game logic
-├── game2048_env.py      # Gymnasium environment wrapper (for RL training)
-├── ai_player.py         # Expectimax AI (heuristic fallback)
-├── neural_player.py     # CNN policy/value network + inference
-├── train_neural.py      # PPO self-play trainer (runs in background)
-├── game_ui.py           # Pygame UI — auto-selects Neural or Expectimax AI
-├── benchmark.py         # Performance testing
+├── game_ui.py           # Pygame UI — auto-selects best available AI
+├── benchmark.py         # Performance benchmarking
 ├── test_game.py         # Unit tests
+│
+├── ntuple_network.py    # N-Tuple TD: bitboard, pattern features, learning
+├── ntuple_player.py     # N-Tuple player UI adapter
+├── td_trainer.py        # TD(0) self-play trainer
+│
+├── ai_player.py         # Expectimax AI (heuristic fallback)
+│
+├── game2048_env.py      # Gymnasium environment wrapper (for PPO)
+├── neural_player.py     # CNN policy/value network + inference
+├── train_neural.py      # PPO self-play trainer
+│
 ├── requirements.txt     # Python dependencies
-└── README.md            # This file
+└── README.md
 ```
 
-## Installation
+---
+
+## Quick start
 
 ```bash
 git clone https://github.com/JerJer2465/2048-optimal-player.git
 cd 2048-optimal-player
 pip3 install -r requirements.txt
+python3 game_ui.py          # watch Expectimax AI (N-Tuple kicks in after training)
 ```
-
----
-
-## Running the game
-
-```bash
-python3 game_ui.py
-```
-
-The UI automatically uses the **neural network** if a trained checkpoint exists, otherwise falls back to the Expectimax AI.
 
 **Controls:**
 | Key | Action |
 |-----|--------|
 | `SPACE` | Pause / resume |
-| `R` | Reload latest checkpoint and start a new game |
+| `R` | Reload checkpoint and start new game |
 | `Q` | Quit |
+
+The UI priority is: **N-Tuple AI** (orange) > Neural AI (green) > Expectimax (blue).
 
 ---
 
-## Training the neural network
+## N-Tuple TD Learning (primary AI)
 
-### Start training (keeps running while lid is closed)
+Based on [Szubert & Jaśkowski, CIG 2014](https://doi.org/10.1109/CIG.2014.6932907) via
+[moporgic/TDL2048-Demo](https://github.com/moporgic/TDL2048-Demo).
 
-```bash
-cd /path/to/2048-optimal-player
-caffeinate -i nohup python3 -u train_neural.py > training.log 2>&1 &
+### How it works
+
+The board is stored as a 64-bit bitboard (each of the 16 cells stores its log₂ tile
+value in 4 bits). A **4×6-tuple network** is a collection of lookup tables, one per
+board pattern:
+
+```
+Patterns (each with 8 isomorphisms = rotate + reflect):
+  [0,1,2,3,4,5]   [4,5,6,7,8,9]   [0,1,2,4,5,6]   [4,5,6,8,9,10]
+   . . . .          . . . .          . . . .          . . . .
+   X X X X          X X X X          X X X .          . X X X
+   X X . .          X X . .          X X . .          . X X X
+   . . . .          . . . .          . . . .          . . . .
+
+Total weight table: 4 × 16^6 × 4 bytes ≈ 256 MB
 ```
 
-- `caffeinate -i` — prevents macOS from sleeping (training continues with lid closed)
-- `nohup` — keeps the process alive if the terminal is closed
-- Output is saved to `training.log`
+**Training** uses **TD(0) afterstate learning** — the key insight:
 
-### Monitor training output
-
-```bash
-tail -f training.log
+```
+state_t  →  action_a  →  afterstate_ŝ_t  →  random tile  →  state_{t+1}
 ```
 
-### Stop training
+By learning `V(afterstate)` instead of `V(state)`, the TD target is fully deterministic
+(no averaging over random tile spawns). The backward update per episode:
 
-```bash
-pkill -f train_neural.py
+```python
+target = 0
+for each move (last → first):
+    error  = target - V(afterstate)
+    target = reward + update(afterstate, alpha × error)
 ```
 
-### TensorBoard (real-time metrics dashboard)
+### Train
+
+```bash
+python3 td_trainer.py                    # 100k games, saves ntuple.bin
+python3 td_trainer.py --total 500000     # more training (resumes automatically)
+python3 td_trainer.py --alpha 0.05       # lower learning rate
+```
+
+Progress prints every 1000 games:
+
+```
+     1,000  avg =    5,432.0  max =   18,234  (28 games/s)
+    10,000  avg =   28,110.0  max =   95,600  (11 games/s)
+   100,000  avg =   68,663.7  max =  177,508
+               2048   91.2%  (22.5%)
+               4096   68.7%  (53.9%)
+               8192   14.8%  (14.8%)
+```
+
+*(Games/sec slows as the AI improves and games get longer.)*
+
+### Monitor with TensorBoard
 
 ```bash
 tensorboard --logdir runs
-# then open http://localhost:6006 in your browser
+# open http://localhost:6006
 ```
 
-Logged metrics include:
-- `charts/avg_score`, `charts/median_score`, `charts/p25_score`, `charts/p75_score`
-- `charts/best_score`, `charts/avg_max_tile`
-- `tiles/pct_reached_1024`, `tiles/pct_reached_2048`, `tiles/pct_reached_4096`, …
-- `losses/policy_loss`, `losses/value_loss`, `losses/entropy`
-- `train/learning_rate`, `train/entropy_coef`
+### Benchmark
 
-Each training run writes to its own timestamped subfolder under `runs/`, so you can compare runs side-by-side.
+```bash
+python3 benchmark.py    # runs Expectimax + N-Tuple benchmarks
+```
 
-### Expected training timeline (CPU)
+### Expected milestones
 
-| Training time | Avg score | Notes |
+| Games trained | Avg score | Notable |
 |---|---|---|
-| 0 min | — | Falls back to Expectimax AI (~7k avg) |
-| 5–10 min | First checkpoint | Neural player active in UI |
-| 1–2 hours | ~40,000+ | Consistently reaches 4096 tile |
-| 4–6 hours | ~100,000+ | Approaches 8192 tile on good runs |
-
-Training resumes automatically from the latest checkpoint if you stop and restart.
+| 1,000 | ~5,000 | Already 5× better than PPO after 12M steps |
+| 10,000 | ~28,000 | Regularly reaching 1024 tile |
+| 100,000 | ~68,000 | 91% 2048 win rate, 69% 4096 win rate |
+| 500,000+ | ~120,000+ | 4096 consistent |
 
 ---
 
-## How the neural network works
+## Expectimax AI (fallback)
 
-**Architecture** — shared-trunk CNN with a policy head and a value head:
-
-```
-Input: (16, 4, 4) one-hot encoded board
-       (channel 0 = empty, channel k = tile 2^k)
-  └─ Conv2d(16→128, 3×3) → BatchNorm → ReLU
-  └─ Conv2d(128→128, 3×3) → BatchNorm → ReLU
-  └─ Conv2d(128→128, 3×3) → BatchNorm → ReLU
-  └─ Flatten → Linear(2048→512) → ReLU
-        ├─ Policy head: Linear(512→4)   → action probabilities
-        └─ Value head:  Linear(512→1)   → state value estimate
-```
-
-**Training** — PPO (Proximal Policy Optimization) self-play with shaped rewards:
-- `log2(score_delta + 1)` per step — continuous, never sparse
-- `+100 × log2(new_max_tile)` bonus whenever a new max tile is reached
-- `-1` for invalid moves (board unchanged)
-
----
-
-## Classic Expectimax AI
-
-Used as a fallback when no checkpoint exists.
+Used automatically when `ntuple.bin` is not found.
 
 - **Algorithm**: Expectimax with iterative deepening (depth 3→5)
 - **Transposition table**: ~60–80% cache hit rate
-- **Heuristics**: monotonicity, smoothness, empty cells, corner strategy
-- **Win rate (2048 tile)**: ~90–95%
+- **Heuristics**: monotonicity, smoothness, empty cells, corner bonus
+- **2048 win rate**: ~90–95%
 
 ```bash
-# Run Expectimax only (no UI)
-python3 ai_player.py
+python3 ai_player.py    # run standalone (no UI)
+```
 
-# Benchmark Expectimax (10 games)
-python3 benchmark.py
+---
+
+## Neural Network / PPO (experimental)
+
+A CNN trained with Proximal Policy Optimization. Left in place for research purposes —
+PPO without lookahead is structurally unsuited to 2048 (long credit-assignment horizon,
+exponential reward scale, sparse signal for large tiles).
+
+```bash
+caffeinate -i nohup python3 -u train_neural.py > training.log 2>&1 &
+tail -f training.log
+pkill -f train_neural.py    # stop
+```
+
+**Architecture** — shared CNN trunk with policy and value heads:
+
+```
+Input: (16, 4, 4) one-hot encoded board
+  └─ Conv2d(16→128, 3×3) → BN → ReLU  ×3
+  └─ Flatten → Linear(2048→512) → ReLU
+        ├─ Policy head: Linear(512→4)
+        └─ Value head:  Linear(512→1)
 ```
 
 ---
